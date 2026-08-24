@@ -1,0 +1,42 @@
+# OS/editor noise
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# Local logs, temporary files, and failed patch leftovers
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# Local installer/download artifacts
+/remnux/*
+ghidra_*.zip
+powershell-*-linux-arm64.tar.gz
+*.AppImage
+*.deb
+
+# Local generated reports
+reports/
+results.yaml*
+*_failed-states.json
+*_failed-states.md
+*_failed-state-diff.md
