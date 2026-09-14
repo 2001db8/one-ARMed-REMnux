@@ -4,7 +4,7 @@
 # Companion to ../README.md
 set -euo pipefail
 
-TESTED_SALT_STATES_VERSION="v2026.34.3"
+TESTED_SALT_STATES_VERSION="v2026.37.1"
 SALT_STATES_CACHE_DIR="/var/cache/cast/remnux_salt-states"
 
 echo "======================================"
@@ -40,7 +40,7 @@ fi
 
 echo ""
 
-echo "[1/10] Handling the i386 foreign architecture..."
+echo "[1/11] Handling the i386 foreign architecture..."
 # Once the Ubuntu base-source validation passes, leaving i386 registered is safe.
 # Remove it only when no i386 package records use it, since Wine may install them.
 if dpkg --print-foreign-architectures | grep -q i386; then
@@ -65,7 +65,7 @@ else
 fi
 
 echo ""
-echo "[2/10] Validating sources and fixing dpkg/apt state..."
+echo "[2/11] Validating sources and fixing dpkg/apt state..."
 sudo apt update
 
 APT_INDEX_TARGETS="$(apt-get indextargets \
@@ -91,7 +91,7 @@ sudo apt --fix-broken install -y
 echo "  OK: dpkg/apt state checked"
 
 echo ""
-echo "[3/10] Installing build dependencies + replacements..."
+echo "[3/11] Installing build dependencies + replacements..."
 # Ubuntu's non-free unrar may require multiverse. If unavailable, use unrar-free
 # as the safe baseline and install unrar later only when better RAR support is needed.
 apt_packages=(cmake build-essential python3-dev python3-venv openjdk-21-jdk 7zip p7zip-full)
@@ -125,7 +125,7 @@ else
 fi
 
 echo ""
-echo "[4/10] Checking nodejs + npm tools..."
+echo "[4/11] Checking nodejs + npm tools..."
 # In the contaminated-source test run, the nodejs pkg state died from a broken
 # apt refresh and cascaded to the npm tools. Only install what is missing.
 npm_packages=(box-js webcrack js-deobfuscator opencode-ai @remnux/mcp-server)
@@ -191,7 +191,7 @@ elif [ "${npm_tooling_complete}" != true ]; then
 fi
 
 echo ""
-echo "[5/10] Installing Ghidra from upstream..."
+echo "[5/11] Installing Ghidra from upstream..."
 # Check the actual latest release URL at https://github.com/NationalSecurityAgency/ghidra/releases
 GHIDRA_ZIP="${GHIDRA_ZIP:-ghidra_12.1.2_PUBLIC_20260605.zip}"
 GHIDRA_TAG="${GHIDRA_TAG:-Ghidra_12.1.2_build}"
@@ -232,7 +232,7 @@ else
 fi
 
 echo ""
-echo "[6/10] Building Ghidra native components for linux_arm_64..."
+echo "[6/11] Building Ghidra native components for linux_arm_64..."
 GHIDRA_DIR=$(readlink -f /opt/ghidra 2>/dev/null || echo "")
 
 if [ -n "${GHIDRA_DIR}" ] && [ -d "${GHIDRA_DIR}" ]; then
@@ -263,7 +263,7 @@ else
 fi
 
 echo ""
-echo "[7/10] Installing PowerShell from tarball..."
+echo "[7/11] Installing PowerShell from tarball..."
 if ! command -v pwsh &>/dev/null; then
   PWSH_VER="${PWSH_VER:-7.6.3}"  # known-good default; set PWSH_VER=latest for newest stable
   if [ "${PWSH_VER}" = "latest" ]; then
@@ -293,7 +293,7 @@ else
 fi
 
 echo ""
-echo "[8/10] Checking qiling + keystone-engine..."
+echo "[8/11] Checking qiling + keystone-engine..."
 QILING_PYTHON="/opt/qiling/bin/python"
 QILING_SMOKE_TEST='from keystone import Ks, KS_ARCH_X86, KS_MODE_32; from qiling import Qiling; assert Ks(KS_ARCH_X86, KS_MODE_32).asm("nop")[0] == [0x90]'
 
@@ -332,7 +332,7 @@ else
 fi
 
 echo ""
-echo "[9/10] Installing flare-floss in an isolated venv..."
+echo "[9/11] Installing flare-floss in an isolated venv..."
 FLOSS_VER="${FLOSS_VER:-3.1.1}"
 FLOSS_VENV="/opt/floss"
 
@@ -362,7 +362,7 @@ else
 fi
 
 echo ""
-echo "[10/10] Fixing vivisect (without PyQt5 GUI)..."
+echo "[10/11] Fixing vivisect (without PyQt5 GUI)..."
 if [ -d /opt/vivisect ]; then
   if /opt/vivisect/bin/pip show vivisect >/dev/null 2>&1; then
     sudo ln -sf /opt/vivisect/bin/vivbin /usr/local/bin/vivbin
@@ -380,13 +380,28 @@ else
 fi
 
 echo ""
+echo "[11/11] Exposing the Magika Python client on ARM64..."
+MAGIKA_PYTHON_CLIENT="/opt/magika/bin/magika-python-client"
+
+if [ -x "${MAGIKA_PYTHON_CLIENT}" ]; then
+  if "${MAGIKA_PYTHON_CLIENT}" --version >/dev/null 2>&1; then
+    sudo ln -sf "${MAGIKA_PYTHON_CLIENT}" /usr/local/bin/magika-python-client
+    echo "  OK: magika-python-client linked and functional"
+  else
+    echo "  FAIL: installed magika-python-client failed its version check"
+  fi
+else
+  echo "  SKIP: ${MAGIKA_PYTHON_CLIENT} not found"
+fi
+
+echo ""
 echo "=========================================="
 echo " Done"
 echo "=========================================="
 echo ""
 echo "Review the OK/FAIL/SKIP lines above for actual results."
 echo ""
-echo "Optional manual fix (see guide, section 4.10):"
+echo "Optional manual fix (see guide, section 4.11):"
 echo "  * peframe-ds via pip --no-deps (works, but bypasses dep resolution)"
 echo ""
 echo "Not fixable on ARM64, use alternatives (see guide, step 5):"

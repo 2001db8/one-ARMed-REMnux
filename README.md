@@ -11,16 +11,17 @@ This is a write-up of what actually worked for me. It walks through preparation,
 > [!IMPORTANT]
 > **Last tested version:**
 >
-> - REMnux salt-states: **v2026.34.3** (tested 2026-08-24)
-> - Installation: fresh Ubuntu 24.04 ARM64 VM, default/dedicated mode (`sudo remnux install --version=v2026.34.3`)
-> - Result before this guide's post-install fixes: **960/1071 states succeeded**
+> - REMnux salt-states: **v2026.37.1** (tested 2026-09-14)
+> - Fresh Ubuntu 24.04 ARM64, default/dedicated REMnus installation mode: `sudo remnux install --version=v2026.37.1` **960/1071 states succeeded** before fixes.
+> - REMnux upgrade from the last tested salt-states v2026.34.3 after updating Ubuntu to 24.04.5 (kernel 7.0.0-31), dedicated upgrade mode: **961/1067 states succeeded** before fixes.
+> - In both scenarios first and second fixup runs exited 0. JStillery and Magika classification smoke tests passed as well.
 
 ## Contents
 
 - [Step 1 - VM Setup](#step-1---vm-setup)
 - [Step 2 - Pre-Install Preparation](#step-2---pre-install-preparation) (`apt` arm64 pinning, build dependencies)
 - [Step 3 - Run the REMnux Installer](#step-3---run-the-remnux-installer)
-- [Step 4 - Post-Install Fixes](#step-4---post-install-fixes) (apt cleanup, nodejs, Ghidra, PowerShell, qiling, FLOSS, vivisect, peframe)
+- [Step 4 - Post-Install Fixes](#step-4---post-install-fixes) (apt cleanup, nodejs, Ghidra, PowerShell, qiling, FLOSS, vivisect, Magika, peframe)
 - [Step 5 - Not Worth Fixing](#step-5---probably-not-worth-fixing-imho-and-what-to-use-instead)
 - [Sample Handling (In/Egress)](#sample-handling-inegress)
 - [Fallback: amd64 REMnux via emulation](#fallback-amd64-remnux-via-emulation)
@@ -124,13 +125,13 @@ For a dedicated REMnux VM, use the default install mode from the REMnux "Install
 curl -O https://REMnux.org/remnux
 chmod +x remnux
 sudo mv remnux /usr/local/bin/
-sudo remnux install --version=v2026.34.3   # dedicated mode, tested baseline
+sudo remnux install --version=v2026.37.1   # dedicated mode, tested baseline
 ```
 
 If you are adding REMnux to an existing Ubuntu system and want to keep more of its current look and feel, use addon mode instead:
 
 ```bash
-sudo remnux install --mode=addon --version=v2026.34.3
+sudo remnux install --mode=addon --version=v2026.37.1
 ```
 
 This guide's counts and post-install expectations refer to the default/dedicated mode. The ARM64 package and tool failures should be largely the same in addon mode, but desktop and configuration states can differ.
@@ -139,7 +140,7 @@ Leave off `--version` only when you actually want the latest salt-states release
 
 Expectations on ARM64:
 
-- The run takes a long time and **will report failures**. On the v2026.34.3 default-mode test, 111 of 1071 states failed. That is expected and mostly harmless.
+- The run takes a long time and **will report failures**. On the v2026.37.1 fresh default-mode test, 111 of 1071 states failed. Review the failures and apply the post-install fixes; the matching upgrade test had 106 failures out of 1067 states.
 - Save the results YAML the installer writes so you can triage later. Current Cast-based installs keep the latest run at `/var/cache/cast/installer/logs/results.yaml`. Older installer runs may use paths such as `/var/cache/remnux/cli/<date>_results.yaml`.
 - Do **not** loop the installer hoping failures resolve. The failures are architectural, not transient.
 
@@ -149,12 +150,12 @@ For stable comparisons between runs I've added `tools/remnux-results-normalize.p
 
 ```bash
 python3 -m pip install pyyaml
-sudo cp /var/cache/cast/installer/logs/results.yaml results.yaml_v2026.34.3
-sudo chown "$USER":"$USER" results.yaml_v2026.34.3
-python3 tools/remnux-results-normalize.py results.yaml_v2026.34.3 \
-  --format json -o v2026.34.3_failed-states.json
-python3 tools/remnux-results-normalize.py old_failed-states.json --compare v2026.34.3_failed-states.json \
-  --format markdown -o old_vs_v2026.34.3_failed-state-diff.md
+sudo cp /var/cache/cast/installer/logs/results.yaml results.yaml_v2026.37.1
+sudo chown "$USER":"$USER" results.yaml_v2026.37.1
+python3 tools/remnux-results-normalize.py results.yaml_v2026.37.1 \
+  --format json -o v2026.37.1_failed-states.json
+python3 tools/remnux-results-normalize.py old_failed-states.json --compare v2026.37.1_failed-states.json \
+  --format markdown -o old_vs_v2026.37.1_failed-state-diff.md
 ```
 
 The normalizer keeps only `result: false` states, drops volatile fields such as `__run_num__`, `duration`, and `start_time`, removes noisy one-off text, sorts requisite cascades, and separates direct failures from requisite cascades. Compare the JSON outputs when you want the most stable diff, and render Markdown when you want something readable.
@@ -163,7 +164,7 @@ The normalizer keeps only `result: false` states, drops volatile fields such as 
 
 ```bash
 ls -1dt /var/cache/cast/remnux_salt-states/v*/ | head -n 1
-# e.g. /var/cache/cast/remnux_salt-states/v2026.34.3/
+# e.g. /var/cache/cast/remnux_salt-states/v2026.37.1/
 ```
 
 The current installer does not give you a stable `remnux version` subcommand. Passing `version` may only print its usage text. Use the cached salt-states release above for this guide's compatibility check.
@@ -266,7 +267,7 @@ sudo ln -sf /opt/microsoft/powershell/7/pwsh /usr/local/bin/pwsh
 
 ### 4.7 qiling
 
-On ARM64, qiling's `keystone-engine` dependency has to build from source. With pip 26.2.1 in salt-states v2026.34.3, the default isolated build leaked the REMnux-created virtualenv into Keystone's old LLVM Python helper and failed with missing standard-library modules such as `__future__` and `traceback`. pip's standard-venv isolation feature avoids that leak and produced a working native `manylinux1_aarch64` wheel. Run this only when the installer did not leave qiling functional:
+On ARM64, qiling's `keystone-engine` dependency has to build from source. With pip 26.2.1 in the salt-states v2026.37.1 fresh-install test, the default isolated build failed with missing standard-library modules such as `__future__` and `traceback` in Keystone's old LLVM Python helper, reproducing the virtualenv-isolation issue seen in v2026.34.3. pip's standard-venv isolation feature again produced a working native build, verified by importing Qiling and assembling an x86 `nop` with Keystone. Run this only when the installer did not leave qiling functional:
 
 ```bash
 sudo /opt/qiling/bin/python -m pip install \
@@ -310,7 +311,20 @@ floss -h
 
 The companion script uses the same tested version by default. Set `FLOSS_VER` to override it. The Salt state will still report the missing REMnux package, but the `floss` command works after this fix.
 
-### 4.10 peframe (optional, manual)
+### 4.10 Magika Python client on ARM64
+
+REMnux installs Magika in `/opt/magika` and links `/usr/local/bin/magika` to the package's primary entrypoint. When the Python package has no compatible precompiled Rust client for ARM64, that entrypoint only prints a warning. The supported Python fallback is installed alongside it but is not linked into the normal command path. Expose the fallback without replacing `magika`, so a future native ARM64 Rust client can still take over that command:
+
+```bash
+sudo ln -sf /opt/magika/bin/magika-python-client \
+  /usr/local/bin/magika-python-client
+magika-python-client --version
+magika-python-client /etc/os-release
+```
+
+Magika 1.0.3 with model `standard_v3_3` was verified on this VM. ONNX Runtime printed `cpuid_info warning: Unknown CPU vendor` under virtualization, but classification still completed successfully.
+
+### 4.11 peframe (optional, manual)
 
 peframe-ds hard-depends on the Python `readline` 6.2 package, whose 2008-era `config.guess` does not recognize aarch64, so the dependency cannot build. The `--no-deps` route **works in practice** though (verified on this VM), because CPython's built-in readline support makes the package redundant at runtime.
 
@@ -411,13 +425,19 @@ If the missing x86_64 tools matter more than occasionally, UTM is worth a look a
 
 ## Result
 
-Numbers from the clean 2026-08-24 default-mode install with salt-states v2026.34.3:
+Results tested on 2026-09-14 with salt-states v2026.37.1 in default/dedicated mode:
 
 | Stage | Result | Outcome |
 |---|---|---|
-| REMnux installer | 960 succeeded, 111 failed | 39 root-cause failures and 72 cascades before post-install fixes |
-| Automated fix path | All 10 script sections have a verified ARM64 path | apt validation, nodejs/npm, Ghidra natives, PowerShell, qiling/Keystone, FLOSS, and vivisect CLI |
+| Fresh REMnux install | 960 succeeded, 111 failed | 39 direct failures and 72 requisite cascades before fixes; no newly failed states versus v2026.34.3 |
+| Upgrade from repaired v2026.34.3 on updated Ubuntu 24.04.5 | 961 succeeded, 106 failed | 37 direct failures and 69 requisite cascades; no newly failed states versus the fresh v2026.37.1 install |
+| Automated fix path, both scenarios | All 11 sections reported OK; both runs exited 0 | APT recovered; repeat runs did not reinstall tools, rebuild natives, or repeat upstream downloads |
+| Additional smoke tests, both scenarios | JStillery and Magika Python client passed | JavaScript processing and file classification completed; the ONNX CPU-vendor warning did not prevent classification |
 | Accepted gaps | See Step 5 | Wine/x86 workflows, STPyV8, PyQt5 GUI dependencies, js-patched, and x86-only PPA binaries are covered by alternatives where practical |
+
+The upgrade's five fewer failures come from Qiling and Vivisect, including their command links, being recognized as already installed. This is not evidence that the Vivisect GUI works. Four one-time GRUB states were absent from the upgrade run, explaining the lower total state count.
+
+Both installer runs reproduced the i386 registration / Ubuntu Ports index failure; the fixup removed the unused foreign architecture and restored successful APT updates. The fresh path also verified the Ghidra 12.1.2 ARM64 native build and the pip 26.2.1 Keystone workaround. The upgrade was repeated after updating Ubuntu to 24.04.5 and rebooting into kernel 7.0.0-31, with the same failed states and successful fixup and smoke-test results. These are focused installation and smoke-test results, not an exhaustive test of every REMnux tool.
 
 ## License
 
