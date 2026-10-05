@@ -271,9 +271,9 @@ fi
 
 echo ""
 echo "[5/11] Installing Ghidra from upstream..."
-# Check the actual latest release URL at https://github.com/NationalSecurityAgency/ghidra/releases
-GHIDRA_ZIP="${GHIDRA_ZIP:-ghidra_12.1.2_PUBLIC_20260605.zip}"
-GHIDRA_TAG="${GHIDRA_TAG:-Ghidra_12.1.2_build}"
+# Pinned release, Ubuntu ARM64 build and GUI smoke-tested 2026-10-05.
+GHIDRA_ZIP="${GHIDRA_ZIP:-ghidra_12.1.4_PUBLIC_20260921.zip}"
+GHIDRA_TAG="${GHIDRA_TAG:-Ghidra_12.1.4_build}"
 GHIDRA_URL="${GHIDRA_URL:-https://github.com/NationalSecurityAgency/ghidra/releases/download/${GHIDRA_TAG}/${GHIDRA_ZIP}}"
 GHIDRA_DIR=""
 if [ ! -d /opt/ghidra ] && [ ! -L /opt/ghidra ]; then

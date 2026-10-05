@@ -4,6 +4,8 @@
 
 REMnux officially only supports x86_64, but much of its tooling can run inside an Ubuntu 24.04 ARM64 (aarch64) guest VM on VMware Fusion.
 
+Official ARM support is on the roadmap, as REMnux maintainer Lenny Zeltser confirmed in [salt-states issue #241](https://github.com/REMnux/salt-states/issues/241#issuecomment-1562141207).
+
 This guide covers preparation, installation, fixes and alternatives for tools that do not work natively. Results depend on the [salt-states release](https://github.com/REMnux/salt-states/releases) and how you prepare the VM.
 
 You need internet access during installation and updates. After that, analysis can run offline. This is a community guide, and corrections and pull requests are welcome.
@@ -238,14 +240,16 @@ Replaces the amd64-only REMnux PPA packages `7zz` and `rar`. On Ubuntu, `unrar` 
 
 The REMnux PPA ghidra .deb is amd64-only. Ghidra itself runs on aarch64, but the release ZIP bundles native components (decompiler, sleigh compiler, demangler) only for `linux_x86_64`. Without building them the GUI starts but complains about **missing essential components**, and decompilation does not work.
 
+The script pins [Ghidra **12.1.4**](https://github.com/NationalSecurityAgency/ghidra/releases/tag/Ghidra_12.1.4_build). It does not upgrade an existing installation at `/opt/ghidra`, even when release overrides are set. The manual block below is intended for a missing installation.
+
 ```bash
-# Download and extract (check releases page for current version).
+# Download and extract the tested release.
 # The companion script accepts GHIDRA_ZIP/GHIDRA_TAG/GHIDRA_URL overrides.
-GHIDRA_ZIP="ghidra_12.1.2_PUBLIC_20260605.zip"
-GHIDRA_URL="https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.2_build/${GHIDRA_ZIP}"
+GHIDRA_ZIP="ghidra_12.1.4_PUBLIC_20260921.zip"
+GHIDRA_URL="https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.4_build/${GHIDRA_ZIP}"
 cd /tmp && wget "${GHIDRA_URL}"
 sudo unzip -q "${GHIDRA_ZIP}" -d /opt/
-sudo ln -sf /opt/ghidra_12.1.2_PUBLIC /opt/ghidra
+sudo ln -sf /opt/ghidra_12.1.4_PUBLIC /opt/ghidra
 sudo ln -sf /opt/ghidra/ghidraRun /usr/local/bin/ghidra
 rm -f "${GHIDRA_ZIP}"
 
@@ -257,7 +261,7 @@ sudo chmod +x gradlew        # release ZIP does not mark it executable
 sudo ./gradlew buildNatives  # ~1 min; needs internet on first run
 ```
 
-Output lands in the modules' `build/os/linux_arm_64/` directories, which Ghidra prefers over the shipped `os/linux_x86_64/` binaries. After that Ghidra launches cleanly with a fully working decompiler.
+Output lands in the modules' `build/os/linux_arm_64/` directories, which Ghidra prefers over the shipped `os/linux_x86_64/` binaries. Verify the build by opening a harmless binary like `/usr/bin/true` in Ghidra, running auto-analysis and checking that the Decompiler displays C-like code for a function.
 
 ### 4.6 PowerShell
 
@@ -444,12 +448,17 @@ Emulation is roughly 5 to 10 times slower than native. Fine for occasionally run
 
 If the missing x86_64 tools matter more than occasionally, UTM is worth a look as an alternative host for the ARM64 VM. UTM can run ARM64 Linux via Apple's virtualization stack and expose Rosetta to Linux guests, which can make amd64 userspace and containers much more pleasant than plain QEMU emulation. UTM itself is free and open source via GitHub. The Mac App Store build is paid, identical in features, and mainly buys you automatic updates plus support for the project.
 
+> [!NOTE]
+> Apple's Rosetta phase-out concerns Intel **macOS apps**. General support lasts through macOS 27. From macOS 28, only certain older games retain support. See [Apple's announcement](https://support.apple.com/en-us/102527).
+>
+> Intel **Linux binaries in ARM VMs** are a separate case. Apple documents built-in translation from macOS 27 without a separate Rosetta installation. This is not an announced removal of the Linux fallback described here. A compatible VM application and guest configuration are still required. See [Apple's Linux VM documentation](https://developer.apple.com/documentation/virtualization/running-intel-binaries-in-linux-vms).
+
 **Other options considered:**
 
 - **SIFT Workstation** - the classic combo is SIFT as the base plus `remnux install --mode=addon` on top. Both distros use the same Cast/Salt installer, so one VM can carry both. Like REMnux, [SIFT](https://www.sans.org/tools/sift-workstation) is officially x86_64-only. ARM64 is tracked upstream ([teamdfir/sift #592](https://github.com/teamdfir/sift/issues/592)) and a community port exists ([sift-on-arm](https://github.com/jonathanlooi/sift-on-arm)) with reportedly most core tools (sleuthkit, volatility3, wireshark) working. **Untested here.** If I run a combined install, its failure analysis will land in this repo.
 - **Kali ARM64** - excellent native ARM64 support, but its catalog overlaps little with the *missing* REMnux tools (scdbg, thug, js-patched are not packaged there either). Useful as a companion for network/pentest tooling, not as a replacement for the gaps.
 - **Full x86_64 REMnux VM** - VMware Fusion on Apple Silicon cannot run x86_64 VMs. UTM/QEMU can emulate one, but full-system x86_64 emulation is slow. Prefer an ARM64 VM plus container/Rosetta escape hatches unless you explicitly need a complete x86_64 guest.
-- **Rosetta for Linux** - Apple's Virtualization framework can expose Rosetta to Linux guests, but this is supported by UTM/Parallels, not by VMware Fusion. If you ever migrate the VM to UTM, x86_64 binaries (and amd64 containers) run near-native via Rosetta + binfmt.
+- **Rosetta for Linux** - Apple's Virtualization framework can translate x86_64 Linux programs inside an ARM64 guest. This requires a VM application that exposes the feature, plus guest setup and any required x86_64 libraries. It does not run a full x86_64 guest OS. The native VMware Fusion setup in this guide does not depend on it.
 
 ## Result
 

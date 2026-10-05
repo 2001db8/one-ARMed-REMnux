@@ -57,7 +57,7 @@ These are focused checks. They do not cover the full Ghidra GUI, every FLOSS ana
 
 All three runs used the same fixup script. Its SHA-256 was `604279a137f6b95066d5c69beeeef91c2ee442a29b5cb5705d60edc61910380a`.
 
-The subsequent PowerShell default change is not part of that hash or those VM results. Archived logs and scripts were kept unchanged.
+The subsequent PowerShell and Ghidra default changes are not part of that hash or those VM results. Their focused validation is recorded below. Archived logs and scripts were kept unchanged.
 
 At the VM-test review, all 21 local control-flow tests passed. A version-selection test was added with the PowerShell change, bringing the passing total to 22. These tests use temporary fixtures and mocked system commands. They check error handling without installing packages or making network requests. Deliberate APT and download failures were not induced on the accepted VMs.
 
@@ -82,6 +82,18 @@ PowerShell exit status: 0
 ```
 
 This closes validation of the new installation default. It does not test an upgrade of an existing PowerShell installation, which the script still leaves untouched. The complete REMnux test baseline remains the September runs above.
+
+## Ghidra 12.1.4 validation on 2026-10-05
+
+A focused test used a patched Ubuntu ARM64 VM with REMnux salt-states **v2026.37.1** installed and no prior fixup. Release overrides selected **Ghidra 12.1.4**, using `ghidra_12.1.4_PUBLIC_20260921.zip`.
+
+The first fixup installed Ghidra at `/opt/ghidra_12.1.4_PUBLIC` and built the `linux_arm_64` native components successfully with the bundled Gradle wrapper. Both fixup runs had explicitly captured exit status 0 and reported zero failures and zero skipped actions. The second run reused the installation and native components without another download or build.
+
+The operator confirmed the GUI analysis and decompiler smoke test on `/usr/bin/true`, an ARM64 ELF executable. Its SHA-256 was `a82c1b5fd392d72148d53992a860224ff3753cb2dc8909e9bdd1620e54ee1b88`. The captured GUI console log was empty, so the GUI result rests on the operator's confirmation rather than console output.
+
+The archived script's SHA-256 was `de7e72dd08b8a15c6b9e48dff713f0d1fa8ba8976b47254bc7453920d02a5b2a`. It matched the repository script before promoting 12.1.4 to the default. The test exercised the existing override path. The later default change does not belong to that hash.
+
+This validates installation, the native build, basic GUI analysis and decompilation, and repeat-run behavior. It does not cover every Ghidra feature or upgrading an existing Ghidra installation. The complete REMnux test baseline remains unchanged.
 
 ## Earlier tests
 
