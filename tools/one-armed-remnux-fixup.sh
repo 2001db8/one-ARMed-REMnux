@@ -4,6 +4,42 @@
 # Companion to ../README.md
 set -euo pipefail
 
+FAILURES=0
+SKIPS=0
+
+fail() {
+  echo "  FAIL: $*"
+  FAILURES=$((FAILURES + 1))
+}
+
+skip() {
+  echo "  SKIP: $*"
+  SKIPS=$((SKIPS + 1))
+}
+
+finish() {
+  local status=$1
+  trap - EXIT
+  if [ "$status" -ne 0 ]; then
+    # Also covers an unexpected unguarded command failure under set -e.
+    if [ "$FAILURES" -eq 0 ]; then
+      fail "script stopped early (exit ${status}); review the preceding output."
+    else
+      echo "Script stopped early (exit ${status}); review the preceding failure."
+    fi
+  elif [ "$FAILURES" -gt 0 ]; then
+    status=1
+  fi
+  echo ""
+  echo "Summary: ${FAILURES} reported failure(s), ${SKIPS} skipped action(s); exit ${status}."
+  if [ "$SKIPS" -gt 0 ]; then
+    echo "Skipped actions need review; exit 0 does not mean every tool was installed or tested."
+  fi
+  exit "$status"
+}
+trap 'finish "$?"' EXIT
+
+# Release baseline; see README for revision-specific VM validation status.
 TESTED_SALT_STATES_VERSION="v2026.37.1"
 SALT_STATES_CACHE_DIR="/var/cache/cast/remnux_salt-states"
 
@@ -50,7 +86,7 @@ if dpkg --print-foreign-architectures | grep -q i386; then
   )
 
   if [ "${#I386_PACKAGE_RECORDS[@]}" -gt 0 ]; then
-    echo "  SKIP: i386 is used by ${#I386_PACKAGE_RECORDS[@]} package record(s), leaving it registered"
+    skip "i386 is used by ${#I386_PACKAGE_RECORDS[@]} package record(s), leaving it registered"
     printf '    %s\n' "${I386_PACKAGE_RECORDS[@]:0:8}"
     if [ "${#I386_PACKAGE_RECORDS[@]}" -gt 8 ]; then
       echo "    ... and $((${#I386_PACKAGE_RECORDS[@]} - 8)) more"
@@ -58,7 +94,7 @@ if dpkg --print-foreign-architectures | grep -q i386; then
   elif sudo dpkg --remove-architecture i386; then
     echo "  OK: unused i386 architecture removed"
   else
-    echo "  SKIP: i386 could not be removed, leaving it registered"
+    skip "i386 could not be removed, leaving it registered"
   fi
 else
   echo "  OK: i386 not registered, nothing to do"
@@ -66,49 +102,92 @@ fi
 
 echo ""
 echo "[2/11] Validating sources and fixing dpkg/apt state..."
-sudo apt update
+if ! sudo apt update; then
+  fail "apt update failed; stopping before using potentially stale indexes."
+  echo "  Check the errors above for network/signature problems or unsupported architectures."
+  echo "  For Ports i386 errors, restrict every Ubuntu base stanza to arm64 (guide Step 2.1)."
+  echo "  Do not force-remove installed i386 packages; repair the sources, then rerun."
+  exit 1
+fi
 
-APT_INDEX_TARGETS="$(apt-get indextargets \
-  --format '$(SITE) $(RELEASE) $(ARCHITECTURE) $(COMPONENT)' 2>/dev/null || true)"
-AMD64_LIBC_CANDIDATE="$(apt-cache policy libc6:amd64 2>/dev/null \
+if ! APT_INDEX_TARGETS="$(apt-get indextargets \
+  --format '$(SITE) $(RELEASE) $(ARCHITECTURE) $(COMPONENT)' 'Identifier: Packages')"; then
+  fail "could not inspect active APT package indexes"
+  exit 1
+fi
+if ! AMD64_LIBC_POLICY="$(apt-cache policy libc6:amd64 2>/dev/null)"; then
+  fail "could not inspect libc6:amd64 policy"
+  exit 1
+fi
+AMD64_LIBC_CANDIDATE="$(printf '%s\n' "${AMD64_LIBC_POLICY}" \
   | awk '/Candidate:/ {print $2; exit}')"
 
 if printf '%s\n' "${APT_INDEX_TARGETS}" | grep -q 'archive\.ubuntu\.com/ubuntu'; then
-  echo "  FAIL: active Ubuntu indexes from archive.ubuntu.com detected on ARM64"
+  fail "active Ubuntu indexes from archive.ubuntu.com detected on ARM64"
   echo "  Fix ubuntu.sources as described in guide Step 2.1, then rerun this script."
   exit 1
 fi
 
 if [ -n "${AMD64_LIBC_CANDIDATE}" ] && [ "${AMD64_LIBC_CANDIDATE}" != "(none)" ]; then
-  echo "  FAIL: libc6:amd64 candidate ${AMD64_LIBC_CANDIDATE} is visible to apt"
+  fail "libc6:amd64 candidate ${AMD64_LIBC_CANDIDATE} is visible to apt"
   echo "  Fix ubuntu.sources as described in guide Step 2.1, then rerun this script."
   exit 1
 fi
 
 echo "  OK: no Ubuntu amd64 base indexes or libc6:amd64 candidate detected"
-sudo dpkg --configure -a || true
-sudo apt --fix-broken install -y
+if ! sudo dpkg --configure -a; then
+  echo "  WARN: dpkg configuration failed; attempting APT dependency repair next."
+fi
+if ! sudo apt --fix-broken install -y; then
+  fail "APT dependency repair failed; resolve the package errors before rerunning."
+  exit 1
+fi
+if ! sudo dpkg --configure -a; then
+  fail "dpkg configuration still fails after APT repair; stopping."
+  exit 1
+fi
 echo "  OK: dpkg/apt state checked"
 
 echo ""
 echo "[3/11] Installing build dependencies + replacements..."
-# Ubuntu's non-free unrar may require multiverse. If unavailable, use unrar-free
-# as the safe baseline and install unrar later only when better RAR support is needed.
-apt_packages=(cmake build-essential python3-dev python3-venv openjdk-21-jdk 7zip p7zip-full)
-missing_apt=()
-for pkg in "${apt_packages[@]}"; do
+# Required by later download/build steps: failure must stop the script.
+required_apt_packages=(curl unzip cmake build-essential python3-dev python3-venv openjdk-21-jdk)
+missing_required_apt=()
+for pkg in "${required_apt_packages[@]}"; do
   if ! dpkg-query -W -f='${Status}' "${pkg}" 2>/dev/null | grep -q "install ok installed"; then
-    missing_apt+=("${pkg}")
+    missing_required_apt+=("${pkg}")
   fi
 done
 
-if [ "${#missing_apt[@]}" -gt 0 ]; then
-  echo "  Installing missing apt packages: ${missing_apt[*]}"
-  sudo apt install -y "${missing_apt[@]}"
+if [ "${#missing_required_apt[@]}" -gt 0 ]; then
+  echo "  Installing missing required apt packages: ${missing_required_apt[*]}"
+  if sudo apt install -y "${missing_required_apt[@]}"; then
+    echo "  OK: required build/download dependencies installed"
+  else
+    fail "required apt packages could not be installed: ${missing_required_apt[*]}"
+    echo "  Stopping: later builds depend on these prerequisites. Fix APT, then rerun."
+    exit 1
+  fi
 else
-  echo "  OK: build dependencies and apt replacements already installed"
+  echo "  OK: required build/download dependencies already installed"
 fi
 
+# Replacements are independent of the later builds. Try each missing package
+# separately so one unavailable replacement does not block another one.
+replacement_apt_packages=(7zip p7zip-full)
+for pkg in "${replacement_apt_packages[@]}"; do
+  if dpkg-query -W -f='${Status}' "${pkg}" 2>/dev/null | grep -q "install ok installed"; then
+    echo "  OK: apt replacement already installed: ${pkg}"
+  elif sudo apt install -y "${pkg}"; then
+    echo "  OK: apt replacement installed: ${pkg}"
+  else
+    fail "apt replacement could not be installed: ${pkg}"
+    echo "  Continuing with independent tools; the final exit status will be nonzero."
+  fi
+done
+
+# Ubuntu's non-free unrar may require multiverse. If unavailable, use unrar-free
+# as the safe baseline and install unrar later only when better RAR support is needed.
 if dpkg-query -W -f='${Status}' unrar 2>/dev/null | grep -q "install ok installed"; then
   echo "  OK: unrar already installed"
 elif dpkg-query -W -f='${Status}' unrar-free 2>/dev/null | grep -q "install ok installed"; then
@@ -120,7 +199,7 @@ else
   elif sudo apt install -y unrar-free; then
     echo "  OK: unrar-free installed as baseline fallback"
   else
-    echo "  SKIP: neither unrar nor unrar-free could be installed"
+    skip "neither unrar nor unrar-free could be installed"
   fi
 fi
 
@@ -149,7 +228,7 @@ fi
 
 if [ "${npm_tooling_complete}" != true ] && sudo apt install -y nodejs; then
   if ! command -v npm >/dev/null 2>&1; then
-    echo "  FAIL: npm not found after installing nodejs"
+    fail "npm not found after installing nodejs"
   else
     missing_npm=()
     for pkg in "${npm_packages[@]}"; do
@@ -161,7 +240,7 @@ if [ "${npm_tooling_complete}" != true ] && sudo apt install -y nodejs; then
     if [ "${#missing_npm[@]}" -gt 0 ]; then
       echo "  Installing missing npm packages: ${missing_npm[*]}"
       sudo npm install -g "${missing_npm[@]}" || \
-        echo "  SKIP: some npm packages failed, retry them individually"
+        fail "some npm packages failed, retry them individually"
     else
       echo "  OK: core npm tooling already installed"
     fi
@@ -178,16 +257,16 @@ if [ "${npm_tooling_complete}" != true ] && sudo apt install -y nodejs; then
           sudo ln -sf "${JSTILLERY_CLI}" /usr/local/bin/jstillery
           echo "  OK: JStillery installed and command linked"
         else
-          echo "  SKIP: JStillery installed, but jstillery_cli.js was not found"
+          fail "JStillery installed, but jstillery_cli.js is missing or not executable"
         fi
       else
-        echo "  SKIP: JStillery install failed"
+        fail "JStillery install failed"
       fi
     fi
-    echo "  OK: nodejs present, npm tooling checked"
+    echo "  Node.js/npm checks completed; see individual results above."
   fi
 elif [ "${npm_tooling_complete}" != true ]; then
-  echo "  FAIL: nodejs install failed, check the NodeSource repo configuration"
+  fail "nodejs install failed, check the NodeSource repo configuration"
 fi
 
 echo ""
@@ -198,11 +277,12 @@ GHIDRA_TAG="${GHIDRA_TAG:-Ghidra_12.1.2_build}"
 GHIDRA_URL="${GHIDRA_URL:-https://github.com/NationalSecurityAgency/ghidra/releases/download/${GHIDRA_TAG}/${GHIDRA_ZIP}}"
 GHIDRA_DIR=""
 if [ ! -d /opt/ghidra ] && [ ! -L /opt/ghidra ]; then
-  cd /tmp
+  GHIDRA_DOWNLOAD_DIR=$(mktemp -d)
+  GHIDRA_ARCHIVE="${GHIDRA_DOWNLOAD_DIR}/ghidra.zip"
   echo "  Downloading Ghidra..."
-  if wget -q "${GHIDRA_URL}" -O "${GHIDRA_ZIP}"; then
+  if curl -fsSL "${GHIDRA_URL}" -o "${GHIDRA_ARCHIVE}"; then
     mapfile -t GHIDRA_ARCHIVE_ROOTS < <(
-      unzip -Z1 "${GHIDRA_ZIP}" 2>/dev/null \
+      unzip -Z1 "${GHIDRA_ARCHIVE}" 2>/dev/null \
         | awk -F/ 'NF > 1 && $1 != "" {print $1}' \
         | sort -u
     )
@@ -210,23 +290,25 @@ if [ ! -d /opt/ghidra ] && [ ! -L /opt/ghidra ]; then
     if [ "${#GHIDRA_ARCHIVE_ROOTS[@]}" -ne 1 ] \
       || [ "${GHIDRA_ARCHIVE_ROOTS[0]:-}" = "." ] \
       || [ "${GHIDRA_ARCHIVE_ROOTS[0]:-}" = ".." ]; then
-      echo "  FAIL: expected exactly one top-level directory in ${GHIDRA_ZIP}"
+      fail "expected exactly one top-level directory in ${GHIDRA_ZIP}"
     else
       GHIDRA_DIR="/opt/${GHIDRA_ARCHIVE_ROOTS[0]}"
       echo "  Extracting ${GHIDRA_ARCHIVE_ROOTS[0]}..."
-      sudo unzip -q -o "${GHIDRA_ZIP}" -d /opt/
-      if [ -d "${GHIDRA_DIR}" ]; then
+      if ! sudo unzip -q -o "${GHIDRA_ARCHIVE}" -d /opt/; then
+        fail "Ghidra extraction failed; check disk space, permissions and the archive"
+      elif [ -d "${GHIDRA_DIR}" ]; then
         sudo ln -sf "${GHIDRA_DIR}" /opt/ghidra
         sudo ln -sf "${GHIDRA_DIR}/ghidraRun" /usr/local/bin/ghidra
         echo "  OK: Ghidra installed at ${GHIDRA_DIR}"
       else
-        echo "  FAIL: archive root was not extracted as expected: ${GHIDRA_DIR}"
+        fail "archive root was not extracted as expected: ${GHIDRA_DIR}"
       fi
     fi
-    rm -f "${GHIDRA_ZIP}"
   else
-    echo "  FAIL: download failed, check the release URL and retry manually"
+    fail "Ghidra download failed, check the release URL and retry manually"
   fi
+  rm -f -- "${GHIDRA_ARCHIVE}"
+  rmdir -- "${GHIDRA_DOWNLOAD_DIR}"
 else
   echo "  OK: /opt/ghidra already exists, skipping download"
 fi
@@ -250,26 +332,26 @@ if [ -n "${GHIDRA_DIR}" ] && [ -d "${GHIDRA_DIR}" ]; then
       if (cd "${GRADLE_DIR}" && sudo ./gradlew buildNatives); then
         echo "  OK: Ghidra native components built for linux_arm_64"
       else
-        echo "  FAIL: buildNatives failed, check build-essential and the JDK"
+        fail "buildNatives failed, check build-essential and the JDK"
         echo "    Retry manually: cd ${GRADLE_DIR} && sudo ./gradlew buildNatives"
       fi
     else
-      echo "  FAIL: ${GRADLE_DIR} not found, unexpected Ghidra layout"
+      fail "${GRADLE_DIR} not found, unexpected Ghidra layout"
       echo "    Check: ls ${GHIDRA_DIR}/support/"
     fi
   fi
 else
-  echo "  SKIP: Ghidra installation not found, skipping"
+  skip "Ghidra installation not found, skipping"
 fi
 
 echo ""
 echo "[7/11] Installing PowerShell from tarball..."
 if ! command -v pwsh &>/dev/null; then
-  PWSH_VER="${PWSH_VER:-7.6.3}"  # known-good default; set PWSH_VER=latest for newest stable
+  PWSH_VER="${PWSH_VER:-7.6.6}"  # pinned release, Ubuntu ARM64 smoke-tested 2026-10-05
   if [ "${PWSH_VER}" = "latest" ]; then
     if ! PWSH_VER="$(curl -fsSL https://api.github.com/repos/PowerShell/PowerShell/releases/latest \
       | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')"; then
-      echo "  FAIL: could not resolve latest PowerShell version"
+      fail "could not resolve latest PowerShell version"
       PWSH_VER=""
     fi
   fi
@@ -285,7 +367,7 @@ if ! command -v pwsh &>/dev/null; then
       echo "  OK: PowerShell $(pwsh --version) installed"
     else
       rm -f /tmp/powershell.tar.gz
-      echo "  FAIL: PowerShell install failed, check the network and release URL"
+      fail "PowerShell install failed, check the network and release URL"
     fi
   fi
 else
@@ -321,14 +403,14 @@ if [ -x "${QILING_PYTHON}" ]; then
         sudo ln -sf /opt/qiling/bin/qltool /usr/local/bin/qltool
         echo "  OK: qiling + keystone-engine installed and functional"
       else
-        echo "  FAIL: qiling install or smoke test failed"
+        fail "qiling install or smoke test failed"
       fi
     else
-      echo "  FAIL: keystone-engine ARM64 build failed"
+      fail "keystone-engine ARM64 build failed"
     fi
   fi
 else
-  echo "  SKIP: /opt/qiling venv not found, skipping"
+  skip "/opt/qiling venv not found, skipping"
 fi
 
 echo ""
@@ -354,10 +436,10 @@ else
       sudo ln -sf "${FLOSS_VENV}/bin/floss" /usr/local/bin/floss
       echo "  OK: flare-floss ${FLOSS_VER} installed and functional"
     else
-      echo "  FAIL: flare-floss installed, but the ARM64 smoke test failed"
+      fail "flare-floss installed, but the ARM64 smoke test failed"
     fi
   else
-    echo "  FAIL: flare-floss install failed, check the compiler and pip output"
+    fail "flare-floss install failed, check the compiler and pip output"
   fi
 fi
 
@@ -373,10 +455,10 @@ if [ -d /opt/vivisect ]; then
     sudo ln -sf /opt/vivisect/bin/vdbbin /usr/local/bin/vdbbin
     echo "  OK: vivisect installed (CLI only, no GUI)"
   else
-    echo "  FAIL: vivisect install failed"
+    fail "vivisect install failed"
   fi
 else
-  echo "  SKIP: /opt/vivisect venv not found, skipping"
+  skip "/opt/vivisect venv not found, skipping"
 fi
 
 echo ""
@@ -388,10 +470,10 @@ if [ -x "${MAGIKA_PYTHON_CLIENT}" ]; then
     sudo ln -sf "${MAGIKA_PYTHON_CLIENT}" /usr/local/bin/magika-python-client
     echo "  OK: magika-python-client linked and functional"
   else
-    echo "  FAIL: installed magika-python-client failed its version check"
+    fail "installed magika-python-client failed its version check"
   fi
 else
-  echo "  SKIP: ${MAGIKA_PYTHON_CLIENT} not found"
+  skip "${MAGIKA_PYTHON_CLIENT} not found"
 fi
 
 echo ""
@@ -404,8 +486,8 @@ echo ""
 echo "Optional manual fix (see guide, section 4.11):"
 echo "  * peframe-ds via pip --no-deps (works, but bypasses dep resolution)"
 echo ""
-echo "Not fixable on ARM64, use alternatives (see guide, step 5):"
-echo "  * wine (needs i386) -> shellcode2exe.bat, ssview"
+echo "Not provided by this native ARM64 fix path (see guide, step 5):"
+echo "  * x86 Wine workflows (shellcode2exe.bat, ssview): states may skip/pass without working tools"
 echo "  * STPyV8 -> thug, peepdf-3"
 echo "  * PyQt5 -> pe-tree, vivisect GUI"
 echo "  * i386 multilib -> js-patched (use js115 instead)"

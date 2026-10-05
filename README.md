@@ -2,67 +2,91 @@
   <img src="images/oar_logo_light.png" alt="one-ARMed-REMnux logo" width="320">
 </p>
 
-REMnux officially only supports x86_64, but you can still run it inside an Ubuntu 24.04 ARM64 (aarch64) guest VM on VMware Fusion and about 90% of the tooling installs and works on ARM64 anyway.
+REMnux officially only supports x86_64, but much of its tooling can run inside an Ubuntu 24.04 ARM64 (aarch64) guest VM on VMware Fusion.
 
-The fixes below clear up most of the avoidable ARM64 failures. Exact counts move with every salt-states release and depend on how you prepare the box first. My earlier `--mode=addon` tests hit the same package and tool failure classes, though addon mode skips some full-environment configuration on purpose. REMnux ships several signed releases a week (`vYYYY.week.release`, over at https://github.com/REMnux/salt-states/releases), so the states keep drifting. Your mileage will vary.
+This guide covers preparation, installation, fixes and alternatives for tools that do not work natively. Results depend on the [salt-states release](https://github.com/REMnux/salt-states/releases) and how you prepare the VM.
 
-This is a write-up of what actually worked for me. It walks through preparation, the install, the post-install fixes, and which failures I decided to just live with. It assumes you have open internet access while installing and updating. Once that is done, the analysis work can run fully offline. I try to keep it somewhat up-to-date, and pull requests are always welcome.
+You need internet access during installation and updates. After that, analysis can run offline. This is a community guide, and corrections and pull requests are welcome.
 
 > [!IMPORTANT]
-> **Last tested version:**
+> **Last tested version**
 >
-> - REMnux salt-states: **v2026.37.1** (tested 2026-09-14)
-> - Fresh Ubuntu 24.04 ARM64, default/dedicated REMnus installation mode: `sudo remnux install --version=v2026.37.1` **960/1071 states succeeded** before fixes.
-> - REMnux upgrade from the last tested salt-states v2026.34.3 after updating Ubuntu to 24.04.5 (kernel 7.0.0-31), dedicated upgrade mode: **961/1067 states succeeded** before fixes.
-> - In both scenarios first and second fixup runs exited 0. JStillery and Magika classification smoke tests passed as well.
+> REMnux salt-states **v2026.37.1** on **Ubuntu 24.04.5 ARM64**, tested on **2026-09-15**.
+>
+> Fresh installation and upgrades were tested in dedicated mode. See the [test results](docs/TEST-RESULTS.md) for coverage, known limits and release history.
 
 ## Contents
 
 - [Step 1 - VM Setup](#step-1---vm-setup)
-- [Step 2 - Pre-Install Preparation](#step-2---pre-install-preparation) (`apt` arm64 pinning, build dependencies)
+- [Step 2 - Pre-Install Preparation](#step-2---pre-install-preparation) (ARM64-only Ubuntu sources, build dependencies)
 - [Step 3 - Run the REMnux Installer](#step-3---run-the-remnux-installer)
-- [Step 4 - Post-Install Fixes](#step-4---post-install-fixes) (apt cleanup, nodejs, Ghidra, PowerShell, qiling, FLOSS, vivisect, Magika, peframe)
+- [Step 4 - Post-Install Fixes](#step-4---post-install-fixes) (apt cleanup, nodejs, Ghidra, PowerShell, qiling, vivisect, FLOSS, Magika, peframe)
 - [Step 5 - Not Worth Fixing](#step-5---probably-not-worth-fixing-imho-and-what-to-use-instead)
 - [Sample Handling (In/Egress)](#sample-handling-inegress)
 - [Fallback: amd64 REMnux via emulation](#fallback-amd64-remnux-via-emulation)
-- [Result](#result)
+- [Test results](docs/TEST-RESULTS.md)
 
 ## Step 1 - VM Setup
 
 1. Create the VM in VMware Fusion: Ubuntu 24.04 ARM64, recommend ≥4 vCPU, ≥8 GB RAM, ≥60 GB disk (the full REMnux install is large, plus samples and build artifacts).
 2. Install Ubuntu 24.04 ARM64 (Desktop or Server + your preferred DE). See <https://docs.remnux.org/install-distro/install-from-scratch#install-ubuntu>
-3. Install VMware guest tools:
+3. Update Ubuntu before installing REMnux and install the VMware guest tools.
 
 ```bash
 sudo apt update && sudo apt full-upgrade -y
 sudo apt install -y open-vm-tools open-vm-tools-desktop
 ```
 
-4. **Take a VM snapshot now.** The REMnux installer runs for a good while and changes the system heavily, so a clean pre-install snapshot is your cheapest way back. 
+4. **Take a VM snapshot now.** The REMnux installer runs for a good while and changes the system heavily, so a clean pre-install snapshot is your cheapest way back.
 
 ## Step 2 - Pre-Install Preparation
 
-### 2.1 Validate and back up the Ubuntu base sources
+### 2.1 Back up and restrict the Ubuntu base sources to ARM64
 
 On ARM64, the Ubuntu base packages have to come from `ports.ubuntu.com/ubuntu-ports` as `arm64`. A mixed Deb822 configuration file can contain one correct ARM64 stanza plus a second `archive.ubuntu.com` stanza carrying `Architectures: amd64 i386`. When that happens, apt starts offering ordinary amd64 packages such as `aeskeyfind`, `rar`, and `edb-debugger`, which dpkg then rejects on the ARM64 system. So a simple grep for any `Architectures: arm64` line is not enough on its own.
 
-REMnux may also register i386 for Wine. Keeping the Ubuntu base source ARM64-only stops that foreign architecture from breaking or contaminating normal Ubuntu package resolution.
+REMnux may also register i386 for Wine. Without an explicit `Architectures:` field, APT uses all configured architectures for that source. A successful ARM64-only index check **before** i386 is registered therefore does not prove the source is safe for the installer. Restrict the Ubuntu base sources to ARM64 first so that registration cannot trigger i386 index requests against Ubuntu Ports. See [Ubuntu's sources.list documentation](https://manpages.ubuntu.com/manpages/noble/man5/sources.list.5.html).
 
-On a fresh Ubuntu 24.04 ARM64 VM the standard source configuration should already be correct. Back it up and verify the indexes apt is actually using. Do not replace a healthy source file:
+> [!WARNING]
+> This applies to **fresh installations too**. Restrict every Ubuntu base stanza to ARM64 before installing REMnux. Otherwise i386 registration can break APT refresh and prevent dependent tools from installing. This restriction does not make x86 packages compatible with ARM64.
+
+On a fresh Ubuntu 24.04 ARM64 VM the mirror and suites may already be correct while the explicit architecture restriction is missing. Back up the file and inspect **every active stanza**, including separate updates/security entries:
 
 ```bash
 sudo install -d -m 0755 /var/backups
 sudo cp -a /etc/apt/sources.list.d/ubuntu.sources \
   "/var/backups/ubuntu.sources.$(date +%Y%m%d-%H%M%S)"
 
+sudo cat /etc/apt/sources.list.d/ubuntu.sources
+```
+
+Each active Ubuntu base stanza with `Types: deb` must contain exactly one `Architectures: arm64` field. If missing or different, edit that stanza while preserving its mirror, suites, components and signing key:
+
+```bash
+sudoedit /etc/apt/sources.list.d/ubuntu.sources
+```
+
+Add or correct this field in **each** applicable stanza (blank lines separate stanzas):
+
+```text
+Architectures: arm64
+```
+
+Do not rely on a file-wide `grep`. One correct stanza can hide another unrestricted one. Also check for `Architectures-Add` / `Architectures-Remove` fields that would undo the restriction. If all Ubuntu base stanzas are already explicitly ARM64-only, no edit is needed. Do not replace a healthy source file wholesale. Check other files that define Ubuntu base sources too. Legacy `.list` entries use `arch=arm64` inside their options. Third-party sources such as WineHQ are separate and must not be rewritten indiscriminately.
+
+Now verify the active **package** indexes (filtering out architecture-independent targets that can print a literal `$(ARCHITECTURE)`):
+
+```bash
 sudo apt update
 apt-get indextargets \
-  --format '$(SITE) $(RELEASE) $(ARCHITECTURE) $(COMPONENT)' |
+  --format '$(SITE) $(RELEASE) $(ARCHITECTURE) $(COMPONENT)' 'Identifier: Packages' |
   sort -u
 apt-cache policy libc6:amd64 aeskeyfind:amd64 rar:amd64 edb-debugger:amd64
 ```
 
-Expected output: Ubuntu base entries use `ports.ubuntu.com/ubuntu-ports` and `arm64`, and `libc6:amd64` and the other amd64 probes have no candidate. If that is what you see, continue with Step 2.2. Architecture-specific third-party repositories such as WineHQ are a separate matter and may still show up in the index list.
+Ubuntu base entries should use `ports.ubuntu.com/ubuntu-ports` (or your intended ARM64 mirror) and `arm64`. Check that they cover `noble`, `noble-updates`, `noble-backports` and `noble-security`. The `libc6:amd64` and other amd64 probes should have no candidate. Continue with Step 2.2 only after both the per-stanza review and the index check pass. Third-party repositories may still show different architectures in the index list.
+
+After the REMnux installer, **before running fixup**, repeat `sudo apt update` and the package-index check. Run `dpkg --print-foreign-architectures` as well. Even if `i386` is registered, Ubuntu base package targets must remain `arm64` with no Ports i386 targets or related 404 errors. If the check fails, repair the sources before continuing. Do not register i386 just for this check.
 
 Only use the following repair if the validation shows an `archive.ubuntu.com` amd64/i386 stanza, ordinary Ubuntu amd64 candidates, or another mixed base-source configuration:
 
@@ -86,7 +110,7 @@ After a repair, run the verification again:
 
 ```bash
 apt-get indextargets \
-  --format '$(SITE) $(RELEASE) $(ARCHITECTURE) $(COMPONENT)' |
+  --format '$(SITE) $(RELEASE) $(ARCHITECTURE) $(COMPONENT)' 'Identifier: Packages' |
   sort -u
 apt-cache policy libc6:amd64 aeskeyfind:amd64 rar:amd64 edb-debugger:amd64
 ```
@@ -103,7 +127,7 @@ With a clean ARM64-only base configuration, nodejs and other native packages res
 
 ### 2.2 Build dependencies
 
-Installing these **before** you run the REMnux installer stops several failures from ever happening:
+Install these prerequisites **before** running REMnux. They supply the downloader and native build toolchain. Some packages still need the fixes in Step 4.
 
 ```bash
 sudo apt install -y curl cmake build-essential openjdk-21-jdk
@@ -111,7 +135,7 @@ sudo apt install -y curl cmake build-essential openjdk-21-jdk
 
 Why:
 
-| Package | Prevents |
+| Package | Purpose |
 |---|---|
 | `curl` | The REMnux installer needs it to run at all. |
 | `cmake` + `build-essential` | qiling's dependency keystone-engine (a C++ assembler library with a Python wrapper) ships pre-compiled packages ("wheels") only for x86_64, so on aarch64 pip falls back to compiling the C++ source at install time. These packages provide the required toolchain, and pip 26.2.x also needs the build-isolation workaround in Step 4.7. |
@@ -134,31 +158,17 @@ If you are adding REMnux to an existing Ubuntu system and want to keep more of i
 sudo remnux install --mode=addon --version=v2026.37.1
 ```
 
-This guide's counts and post-install expectations refer to the default/dedicated mode. The ARM64 package and tool failures should be largely the same in addon mode, but desktop and configuration states can differ.
+This guide assumes dedicated mode. Addon mode keeps more of the existing desktop configuration, so some installation steps and results differ.
 
 Leave off `--version` only when you actually want the latest salt-states release and accept that failure counts and required fixes may differ from this guide. In that case the fixup script will warn you when the detected release does not match its tested baseline. Pinning the state release helps reproducibility, but it does not freeze external apt, npm, PyPI, or upstream download contents.
 
 Expectations on ARM64:
 
-- The run takes a long time and **will report failures**. On the v2026.37.1 fresh default-mode test, 111 of 1071 states failed. Review the failures and apply the post-install fixes; the matching upgrade test had 106 failures out of 1067 states.
+- The run takes a long time and **will report failures**. Review them and apply the post-install fixes. The [test results](docs/TEST-RESULTS.md) give examples, but your exact failure count may differ.
 - Save the results YAML the installer writes so you can triage later. Current Cast-based installs keep the latest run at `/var/cache/cast/installer/logs/results.yaml`. Older installer runs may use paths such as `/var/cache/remnux/cli/<date>_results.yaml`.
-- Do **not** loop the installer hoping failures resolve. The failures are architectural, not transient.
+- Do **not** blindly loop the installer hoping failures resolve. Distinguish architecture limitations and build failures from temporary download or network errors. Retry temporary failures after addressing the cause or waiting out a rate limit. Rerunning alone does not repair the structural failures described below.
 
-`remnux results` is a handy first check. It prints the results file path, counts successful and failed states, and points you at `saltstack.log`. REMnux also ships `remnux-diag.py`, which is better for diagnosing a single run because it groups root causes and cascades and can pull in `saltstack.log` for extra context. Neither one gives you a failed-only, normalized artifact for comparing installs.
-
-For stable comparisons between runs I've added `tools/remnux-results-normalize.py`. Copy the YAML with a versioned name and normalize it:
-
-```bash
-python3 -m pip install pyyaml
-sudo cp /var/cache/cast/installer/logs/results.yaml results.yaml_v2026.37.1
-sudo chown "$USER":"$USER" results.yaml_v2026.37.1
-python3 tools/remnux-results-normalize.py results.yaml_v2026.37.1 \
-  --format json -o v2026.37.1_failed-states.json
-python3 tools/remnux-results-normalize.py old_failed-states.json --compare v2026.37.1_failed-states.json \
-  --format markdown -o old_vs_v2026.37.1_failed-state-diff.md
-```
-
-The normalizer keeps only `result: false` states, drops volatile fields such as `__run_num__`, `duration`, and `start_time`, removes noisy one-off text, sorts requisite cascades, and separates direct failures from requisite cascades. Compare the JSON outputs when you want the most stable diff, and render Markdown when you want something readable.
+`remnux results` is a handy first check. It prints the results file path, counts successful and failed states, and points you at `saltstack.log`. REMnux also ships `remnux-diag.py` to group root causes and dependent failures. If you want to compare releases, see [Comparing installer runs](docs/TEST-RESULTS.md#comparing-installer-runs).
 
 **Record which salt-states release was installed** so you can match it against this guide. Note that `/etc/remnux-version` is never written on ARM64. It's the final Salt state and always cascade-fails, so read the version from the installer cache instead. The release tag is the directory name:
 
@@ -171,7 +181,9 @@ The current installer does not give you a stable `remnux version` subcommand. Pa
 
 ## Step 4 - Post-Install Fixes
 
-The steps below are the primary, auditable fix path. If you would rather automate them after reading the code, run the companion script `tools/one-armed-remnux-fixup.sh`. All steps are verified working on this setup.
+You can apply the fixes below by hand or use [tools/one-armed-remnux-fixup.sh](tools/one-armed-remnux-fixup.sh) after reading it. Run the script as your normal VM user. It invokes `sudo` where needed.
+
+The script stops if APT refresh, package repair or required build dependencies fail. Independent tool failures allow later steps to continue, but the final exit status remains nonzero. This also applies to the separate `7zip` and `p7zip-full` replacements. Review every `SKIP` message. Exit 0 means no failure was detected, not that every REMnux tool works. When logging through `tee`, use `set -o pipefail` and capture `${PIPESTATUS[0]}` immediately after the pipeline.
 
 ### 4.1 Handle the i386 foreign architecture
 
@@ -184,14 +196,14 @@ dpkg-query -W -f='${binary:Package}\t${Architecture}\t${db:Status-Abbrev}\n' 2>/
   awk '$2 == "i386" && $3 != "un" {print $1, $3}'
 ```
 
-If the command prints packages, leave i386 registered. This is safe once the source validation in Step 2.1 passes. If it prints nothing, removing the unused architecture is optional hygiene:
+If the command prints packages, leave i386 registered and ensure every Ubuntu base stanza is explicitly restricted to ARM64 as in Step 2.1. If it prints nothing, removing the unused architecture is optional hygiene **after that restriction is in place**:
 
 ```bash
 sudo dpkg --remove-architecture i386
 sudo apt update
 ```
 
-If you skipped the Step 2.1 validation or it failed, go back to it and repair the Ubuntu base sources first. Removing i386 on its own does not repair a separate `archive.ubuntu.com`/amd64 source block.
+If you skipped the Step 2.1 restriction, i386 registration can make `apt update` fail against Ubuntu Ports. Restrict the Ubuntu base sources first. Removing unused i386 can clear the symptom, but does not prevent it returning on the next installer run. Removing i386 on its own does not repair a separate `archive.ubuntu.com`/amd64 source block.
 
 ### 4.2 Clean up dpkg/apt
 
@@ -202,7 +214,7 @@ sudo apt --fix-broken install -y
 
 ### 4.3 nodejs + npm tools (only if missing)
 
-With clean ARM64 base sources, REMnux normally installs nodejs and the node-based tools during the main run. In the contaminated-source test run they failed as collateral when an apt refresh broke. That is one observed cause, not a reason to reinstall them every time. If `node`, `npm`, and the listed global packages are already there, skip this step. Otherwise the NodeSource repo should already be configured by the installer:
+If `node`, `npm`, and the listed global packages are already installed, skip this step. If they are missing, check APT and the source restrictions in Step 2.1 first. The installer should already have configured the NodeSource repository.
 
 ```bash
 sudo apt install -y nodejs
@@ -249,10 +261,14 @@ Output lands in the modules' `build/os/linux_arm_64/` directories, which Ghidra 
 
 ### 4.6 PowerShell
 
-On amd64, REMnux installs the `powershell` APT package from Microsoft's repo, so it picks up whatever stable version that repo currently offers. On ARM64, Microsoft does not provide an Ubuntu `.deb`, but it does publish official `linux-arm64` tarballs on GitHub. The script defaults to a tested version. Set `PWSH_VER=latest` to track GitHub's latest stable release:
+On amd64, REMnux installs the `powershell` APT package from Microsoft's repo, so it picks up whatever stable version that repo currently offers. On ARM64, Microsoft does not provide an Ubuntu `.deb`, but it does publish official `linux-arm64` tarballs on GitHub.
+
+The script pins [PowerShell **7.6.6**](https://github.com/PowerShell/PowerShell/releases/tag/v7.6.6). Set `PWSH_VER` to choose another release, or use `PWSH_VER=latest` to resolve GitHub's latest stable release at installation time.
+
+**Existing PowerShell installations are not upgraded.** The script only installs PowerShell when `pwsh` is absent, even if `PWSH_VER` is set to a newer version or `latest`. The manual block below is also intended for a missing installation.
 
 ```bash
-PWSH_VER="${PWSH_VER:-7.6.3}"   # known-good; set PWSH_VER=latest for newest stable
+PWSH_VER="${PWSH_VER:-7.6.6}"   # pinned and VM-tested release
 if [ "${PWSH_VER}" = "latest" ]; then
   PWSH_VER="$(curl -fsSL https://api.github.com/repos/PowerShell/PowerShell/releases/latest \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')"
@@ -267,7 +283,7 @@ sudo ln -sf /opt/microsoft/powershell/7/pwsh /usr/local/bin/pwsh
 
 ### 4.7 qiling
 
-On ARM64, qiling's `keystone-engine` dependency has to build from source. With pip 26.2.1 in the salt-states v2026.37.1 fresh-install test, the default isolated build failed with missing standard-library modules such as `__future__` and `traceback` in Keystone's old LLVM Python helper, reproducing the virtualenv-isolation issue seen in v2026.34.3. pip's standard-venv isolation feature again produced a working native build, verified by importing Qiling and assembling an x86 `nop` with Keystone. Run this only when the installer did not leave qiling functional:
+On ARM64, qiling's `keystone-engine` dependency builds from source. With pip 26.2.1, the default isolated build can fail with missing standard-library modules such as `__future__` and `traceback`. The commands below use pip's standard-venv isolation workaround. Run them only if qiling is not already functional. The companion script checks whether the installed pip supports this feature before selecting it.
 
 ```bash
 sudo /opt/qiling/bin/python -m pip install \
@@ -298,7 +314,7 @@ sudo ln -sf /opt/vivisect/bin/vdbbin /usr/local/bin/vdbbin
 
 ### 4.9 FLOSS
 
-The REMnux `flare-floss` package is not available for ARM64, but the upstream Python package works in an isolated venv. Its `binary2strings` dependency compiles a native aarch64 extension from source, and `python3-dev` plus `build-essential` provide the required toolchain. Version 3.1.1 was verified on this VM with Python 3.12 by extracting static strings and running stack, tight, and decoded-string analysis against a 32-bit x86 PE file.
+The REMnux `flare-floss` package is not available for ARM64, but the upstream Python package works in an isolated venv. Its `binary2strings` dependency compiles a native aarch64 extension from source. Install `python3-dev` and `build-essential` to provide the required toolchain.
 
 ```bash
 sudo apt install -y python3-venv python3-dev build-essential
@@ -322,11 +338,11 @@ magika-python-client --version
 magika-python-client /etc/os-release
 ```
 
-Magika 1.0.3 with model `standard_v3_3` was verified on this VM. ONNX Runtime printed `cpuid_info warning: Unknown CPU vendor` under virtualization, but classification still completed successfully.
+ONNX Runtime may print `cpuid_info warning: Unknown CPU vendor` under virtualization. That warning alone does not mean classification failed. Check the result and exit status.
 
 ### 4.11 peframe (optional, manual)
 
-peframe-ds hard-depends on the Python `readline` 6.2 package, whose 2008-era `config.guess` does not recognize aarch64, so the dependency cannot build. The `--no-deps` route **works in practice** though (verified on this VM), because CPython's built-in readline support makes the package redundant at runtime.
+peframe-ds depends on the old Python `readline` 6.2 package, whose build configuration does not recognize aarch64. The manual workaround skips that dependency and uses CPython's existing readline support.
 
 ```bash
 sudo /opt/peframe/bin/pip install --no-deps peframe-ds
@@ -334,11 +350,11 @@ sudo /opt/peframe/bin/pip install pefile requests python-magic yara-python oleto
 sudo ln -sf /opt/peframe/bin/peframe /usr/local/bin/peframe
 ```
 
-Caveat: this bypasses dependency resolution, so a future peframe-ds release may need extra packages installed by hand. That is why it is not in the automated script.
+This bypasses dependency resolution. A future peframe-ds release may need extra packages installed by hand, so the workaround is not part of the automated script.
 
 ## Step 5 - Probably Not Worth Fixing IMHO (and what to use instead)
 
-These failures are architectural. Accept them and use the alternatives.
+These gaps include architecture limitations and unavailable packages in the tested REMnux installation path. A missing ARM64 package does not necessarily mean the upstream tool cannot run on ARM64. Use alternatives where practical.
 
 ### Blocked by missing aarch64 wheels/libraries
 
@@ -365,6 +381,18 @@ These failures are architectural. Accept them and use the alternatives.
 | **jd-gui** | Java - download the jar from github.com/java-decompiler/jd-gui and run it directly |
 | **baksmali/smali** | Java - jars from github.com/google/smali (current upstream, older releases lived under JesusFreke/smali) |
 | **detect-it-easy** | Linux ARM64 currently means building from source, use horsicq/DIE-engine as the build/release repo |
+
+### Other package gaps observed in the tested release
+
+These also failed in the v2026.37.1 installer logs and are not repaired by the companion script. The alternatives cover related workflows, not necessarily the same CLI or every feature.
+
+| Tool/package | Observed failure | Workflow alternative |
+|---|---|---|
+| **libemu / libemu-dev** | No package found in the configured ARM64 repositories | `speakeasy` or qiling for shellcode emulation. Neither is a drop-in libemu library. |
+| **msoffice-crypt** | No package found | [msoffcrypto-tool](https://github.com/nolze/msoffcrypto-tool) for supported encrypted Office documents |
+| **portex** | No package found | Ghidra, `pefile` or `readpe` for PE inspection |
+| **android-project-creator** | No package found | apktool / [jadx](https://github.com/skylot/jadx) for APK inspection and decompilation |
+| **inspircd** | The REMnux state downloads an explicit `inspircd_4.7.0.ubuntu24.04.2_amd64.deb`, which fails to install | Leave out unless analysis requires an IRC service. If needed, evaluate a native IRC server separately. The selected package is the limitation, not necessarily InspIRCd itself. |
 
 ### Quick source builds (only if actually needed)
 
@@ -425,19 +453,7 @@ If the missing x86_64 tools matter more than occasionally, UTM is worth a look a
 
 ## Result
 
-Results tested on 2026-09-14 with salt-states v2026.37.1 in default/dedicated mode:
-
-| Stage | Result | Outcome |
-|---|---|---|
-| Fresh REMnux install | 960 succeeded, 111 failed | 39 direct failures and 72 requisite cascades before fixes; no newly failed states versus v2026.34.3 |
-| Upgrade from repaired v2026.34.3 on updated Ubuntu 24.04.5 | 961 succeeded, 106 failed | 37 direct failures and 69 requisite cascades; no newly failed states versus the fresh v2026.37.1 install |
-| Automated fix path, both scenarios | All 11 sections reported OK; both runs exited 0 | APT recovered; repeat runs did not reinstall tools, rebuild natives, or repeat upstream downloads |
-| Additional smoke tests, both scenarios | JStillery and Magika Python client passed | JavaScript processing and file classification completed; the ONNX CPU-vendor warning did not prevent classification |
-| Accepted gaps | See Step 5 | Wine/x86 workflows, STPyV8, PyQt5 GUI dependencies, js-patched, and x86-only PPA binaries are covered by alternatives where practical |
-
-The upgrade's five fewer failures come from Qiling and Vivisect, including their command links, being recognized as already installed. This is not evidence that the Vivisect GUI works. Four one-time GRUB states were absent from the upgrade run, explaining the lower total state count.
-
-Both installer runs reproduced the i386 registration / Ubuntu Ports index failure; the fixup removed the unused foreign architecture and restored successful APT updates. The fresh path also verified the Ghidra 12.1.2 ARM64 native build and the pip 26.2.1 Keystone workaround. The upgrade was repeated after updating Ubuntu to 24.04.5 and rebooting into kernel 7.0.0-31, with the same failed states and successful fixup and smoke-test results. These are focused installation and smoke-test results, not an exhaustive test of every REMnux tool.
+The [test results](docs/TEST-RESULTS.md) cover fresh installation, upgrades, repeated fixup runs and focused tool checks. They also list the remaining validation gaps and earlier results. A successful fixup does not make every x86-only REMnux tool available on ARM64.
 
 ## License
 
