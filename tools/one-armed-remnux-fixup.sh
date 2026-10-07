@@ -40,7 +40,7 @@ finish() {
 trap 'finish "$?"' EXIT
 
 # Release baseline; see README for revision-specific VM validation status.
-TESTED_SALT_STATES_VERSION="v2026.37.1"
+TESTED_SALT_STATES_VERSION="v2026.41.2"
 SALT_STATES_CACHE_DIR="/var/cache/cast/remnux_salt-states"
 
 echo "======================================"
@@ -414,11 +414,32 @@ else
 fi
 
 echo ""
-echo "[9/11] Installing flare-floss in an isolated venv..."
+echo "[9/11] Checking flare-floss..."
 FLOSS_VER="${FLOSS_VER:-3.1.1}"
 FLOSS_VENV="/opt/floss"
+FLOSS_UPSTREAM_VENV="/opt/flare-floss"
 
-if [ -x "${FLOSS_VENV}/bin/floss" ] && \
+# Newer REMnux releases own this environment and its command links.
+# Do not mask an upstream failure by switching back to the legacy fixup venv.
+if [ -e "${FLOSS_UPSTREAM_VENV}" ] || [ -L "${FLOSS_UPSTREAM_VENV}" ]; then
+  if [ -x "${FLOSS_UPSTREAM_VENV}/bin/python" ] && \
+    [ -x "${FLOSS_UPSTREAM_VENV}/bin/floss" ] && \
+    "${FLOSS_UPSTREAM_VENV}/bin/python" -c \
+      'import binary2strings as b; assert b.extract_all_strings(b"FLARE_FLOSS_ARM64_SMOKE_TEST")' \
+      >/dev/null 2>&1 && \
+    "${FLOSS_UPSTREAM_VENV}/bin/floss" -h >/dev/null 2>&1; then
+    if [ "$(readlink -f /usr/local/bin/floss 2>/dev/null)" = \
+      "$(readlink -f "${FLOSS_UPSTREAM_VENV}/bin/floss")" ]; then
+      echo "  OK: upstream flare-floss already installed and functional, leaving it unchanged"
+    else
+      fail "upstream flare-floss command link is missing or points elsewhere"
+      echo "  Check /usr/local/bin/floss and the REMnux FLOSS state. No FLOSS files or links were changed."
+    fi
+  else
+    fail "upstream flare-floss failed its smoke check"
+    echo "  Check ${FLOSS_UPSTREAM_VENV} and the REMnux installer logs. No FLOSS files or links were changed."
+  fi
+elif [ -x "${FLOSS_VENV}/bin/floss" ] && \
   "${FLOSS_VENV}/bin/python" -c \
     'import binary2strings as b; assert b.extract_all_strings(b"FLARE_FLOSS_ARM64_SMOKE_TEST")' \
     >/dev/null 2>&1 && \
